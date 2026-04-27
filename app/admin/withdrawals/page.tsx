@@ -20,19 +20,19 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import {
   DollarSign,
   Clock,
   CheckCircle,
   XCircle,
+  ArrowLeft,
   Loader2,
   CheckCheck,
   RotateCcw,
   Ban,
-  Search,
 } from "lucide-react";
+import Link from "next/link";
 
 interface Withdrawal {
   id: string;
@@ -46,7 +46,6 @@ interface Withdrawal {
   status: "pending" | "completed" | "rejected";
   createdAt: Date;
   processedAt?: Date;
-  ipAddress?: string;
 }
 
 export default function AdminWithdrawalsPage() {
@@ -55,14 +54,9 @@ export default function AdminWithdrawalsPage() {
   const [processing, setProcessing] = useState<string | null>(null);
   const [markingAll, setMarkingAll] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [search, setSearch] = useState("");
 
   useEffect(() => {
-    const q = query(
-      collection(db, "withdrawals"),
-      where("status", "==", "pending"),
-      orderBy("createdAt", "desc")
-    );
+    const q = query(collection(db, "withdrawals"), orderBy("createdAt", "desc"));
 
     const unsubscribe = onSnapshot(
       q,
@@ -74,14 +68,13 @@ export default function AdminWithdrawalsPage() {
             userId: d.userId,
             username: d.username,
             email: d.email,
-            amountUSD: d.amountUSD || d.amount || 0,
-            pointsDeducted: d.pointsDeducted || d.coins || 0,
-            method: d.method || d.method_name,
-            paymentDetails: d.paymentDetails || d.payment_info,
+            amountUSD: d.amountUSD || 0,
+            pointsDeducted: d.pointsDeducted || 0,
+            method: d.method,
+            paymentDetails: d.paymentDetails,
             status: d.status,
             createdAt: d.createdAt?.toDate() || new Date(),
             processedAt: d.processedAt?.toDate(),
-            ipAddress: d.ipAddress || d.ip_address,
           };
         }) as Withdrawal[];
         setWithdrawals(data);
@@ -104,6 +97,7 @@ export default function AdminWithdrawalsPage() {
     try {
       const batch = writeBatch(db);
 
+      // Update withdrawal status
       const withdrawalRef = doc(db, "withdrawals", id);
       batch.update(withdrawalRef, {
         status,
@@ -111,6 +105,7 @@ export default function AdminWithdrawalsPage() {
         refunded: refundPoints,
       });
 
+      // If rejected with refund, return points to user
       if (status === "rejected" && refundPoints && userId && pointsToRefund) {
         const userRef = doc(db, "users", userId);
         batch.update(userRef, {
@@ -135,16 +130,14 @@ export default function AdminWithdrawalsPage() {
     }
   };
 
+  // Selection handlers
   const pendingWithdrawals = withdrawals.filter((w) => w.status === "pending");
-  const totalPendingUSD = pendingWithdrawals.reduce((acc, w) => acc + (w.amountUSD || 0), 0);
+  const completedWithdrawals = withdrawals.filter((w) => w.status === "completed");
   
-  const filteredWithdrawals = pendingWithdrawals.filter(
-    (w) =>
-      w.username?.toLowerCase().includes(search.toLowerCase()) ||
-      w.paymentDetails?.toLowerCase().includes(search.toLowerCase()) ||
-      w.email?.toLowerCase().includes(search.toLowerCase())
-  );
-
+  // Calculate total paid to users (completed withdrawals)
+  const totalPaidUSD = completedWithdrawals.reduce((acc, w) => acc + (w.amountUSD || 0), 0);
+  const pendingAmountUSD = pendingWithdrawals.reduce((acc, w) => acc + (w.amountUSD || 0), 0);
+  
   const toggleSelection = (id: string) => {
     const newSelected = new Set(selectedIds);
     if (newSelected.has(id)) {
@@ -156,10 +149,10 @@ export default function AdminWithdrawalsPage() {
   };
 
   const selectAll = () => {
-    if (selectedIds.size === filteredWithdrawals.length) {
+    if (selectedIds.size === pendingWithdrawals.length) {
       setSelectedIds(new Set());
     } else {
-      setSelectedIds(new Set(filteredWithdrawals.map((w) => w.id)));
+      setSelectedIds(new Set(pendingWithdrawals.map((w) => w.id)));
     }
   };
 
@@ -193,7 +186,7 @@ export default function AdminWithdrawalsPage() {
   };
 
   const markAllAsPaid = async () => {
-    if (filteredWithdrawals.length === 0) {
+    if (pendingWithdrawals.length === 0) {
       toast.info("No pending withdrawals");
       return;
     }
@@ -202,7 +195,7 @@ export default function AdminWithdrawalsPage() {
     try {
       const batch = writeBatch(db);
 
-      for (const withdrawal of filteredWithdrawals) {
+      for (const withdrawal of pendingWithdrawals) {
         const ref = doc(db, "withdrawals", withdrawal.id);
         batch.update(ref, {
           status: "completed",
@@ -211,7 +204,7 @@ export default function AdminWithdrawalsPage() {
       }
 
       await batch.commit();
-      toast.success(`Marked ${filteredWithdrawals.length} withdrawals as paid`);
+      toast.success(`Marked ${pendingWithdrawals.length} withdrawals as paid`);
       setSelectedIds(new Set());
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : "Failed to mark all as paid";
@@ -248,19 +241,26 @@ export default function AdminWithdrawalsPage() {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 p-4 sm:p-6">
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-4">
-        <div>
-          <h1 className="text-2xl font-bold flex items-center gap-2 text-white">
-            <DollarSign className="h-6 w-6 text-[#3B82F6]" />
-            Pending Withdrawals
-          </h1>
-          <p className="text-white/50">
-            Process withdrawal requests
-          </p>
+        <div className="flex items-center gap-4">
+          <Link href="/admin">
+            <Button variant="ghost" size="icon" className="rounded-xl hover:bg-white/5">
+              <ArrowLeft className="h-5 w-5 text-white" />
+            </Button>
+          </Link>
+          <div>
+            <h1 className="text-2xl font-bold flex items-center gap-2 text-white">
+              <DollarSign className="h-6 w-6 text-[#3B82F6]" />
+              Withdrawals
+            </h1>
+            <p className="text-white/50">
+              Process withdrawal requests
+            </p>
+          </div>
         </div>
-        {filteredWithdrawals.length > 0 && (
+        {pendingWithdrawals.length > 0 && (
           <div className="flex items-center gap-2 flex-wrap">
             {selectedIds.size > 0 && (
               <Button
@@ -286,7 +286,7 @@ export default function AdminWithdrawalsPage() {
               ) : (
                 <CheckCheck className="mr-2 h-4 w-4" />
               )}
-              Approve All ({filteredWithdrawals.length})
+              Approve All ({pendingWithdrawals.length})
             </Button>
           </div>
         )}
@@ -302,50 +302,35 @@ export default function AdminWithdrawalsPage() {
         </Card>
         <Card className="border-white/5 bg-[#0a0a0a] rounded-2xl">
           <CardContent className="p-5 text-center">
-            <p className="text-3xl font-black text-[#8B5CF6]">${totalPendingUSD.toFixed(2)}</p>
+            <p className="text-3xl font-black text-[#8B5CF6]">${pendingAmountUSD.toFixed(2)}</p>
             <p className="text-sm text-white/50">Pending Amount</p>
           </CardContent>
         </Card>
         <Card className="border-white/5 bg-[#0a0a0a] rounded-2xl">
           <CardContent className="p-5 text-center">
-            <p className="text-3xl font-black text-[#3B82F6]">{selectedIds.size}</p>
-            <p className="text-sm text-white/50">Selected</p>
+            <p className="text-3xl font-black text-emerald-500">${totalPaidUSD.toFixed(2)}</p>
+            <p className="text-sm text-white/50">Total Paid to Users</p>
           </CardContent>
         </Card>
       </div>
-
-      {/* Search */}
-      <Card className="border-white/5 bg-[#0a0a0a] rounded-2xl">
-        <CardContent className="p-4">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-white/40" />
-            <Input
-              placeholder="Search by username, email, or payment info..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="pl-10"
-            />
-          </div>
-        </CardContent>
-      </Card>
 
       {/* Withdrawals List */}
       <Card className="border-white/5 bg-[#0a0a0a] rounded-2xl">
         <CardHeader>
           <div className="flex items-center justify-between flex-wrap gap-4">
             <div>
-              <CardTitle className="text-white">Pending Withdrawals</CardTitle>
+              <CardTitle className="text-white">All Withdrawals</CardTitle>
               <CardDescription className="text-white/40">
-                {filteredWithdrawals.length} pending requests
+                {withdrawals.length} total withdrawal requests
               </CardDescription>
             </div>
-            {filteredWithdrawals.length > 0 && (
+            {pendingWithdrawals.length > 0 && (
               <div className="flex items-center gap-2">
                 <Checkbox
-                  checked={selectedIds.size === filteredWithdrawals.length && filteredWithdrawals.length > 0}
+                  checked={selectedIds.size === pendingWithdrawals.length && pendingWithdrawals.length > 0}
                   onCheckedChange={selectAll}
                 />
-                <span className="text-sm text-white/50">Select All</span>
+                <span className="text-sm text-white/50">Select All Pending</span>
               </div>
             )}
           </div>
@@ -363,24 +348,30 @@ export default function AdminWithdrawalsPage() {
                 </div>
               ))}
             </div>
-          ) : filteredWithdrawals.length === 0 ? (
+          ) : withdrawals.length === 0 ? (
             <p className="py-8 text-center text-white/40">
-              No pending withdrawals
+              No withdrawal requests yet
             </p>
           ) : (
             <div className="space-y-3">
-              {filteredWithdrawals.map((withdrawal) => (
+              {withdrawals.map((withdrawal) => (
                 <div
                   key={withdrawal.id}
-                  className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-5"
+                  className={`rounded-2xl border p-5 ${
+                    withdrawal.status === "pending"
+                      ? "border-amber-500/20 bg-amber-500/5"
+                      : "border-white/5 bg-white/[0.02]"
+                  }`}
                 >
                   <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                     <div className="flex items-start gap-3">
-                      <Checkbox
-                        checked={selectedIds.has(withdrawal.id)}
-                        onCheckedChange={() => toggleSelection(withdrawal.id)}
-                        className="mt-1"
-                      />
+                      {withdrawal.status === "pending" && (
+                        <Checkbox
+                          checked={selectedIds.has(withdrawal.id)}
+                          onCheckedChange={() => toggleSelection(withdrawal.id)}
+                          className="mt-1"
+                        />
+                      )}
                       <div className="space-y-1">
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className="font-black text-xl text-white">
@@ -396,78 +387,83 @@ export default function AdminWithdrawalsPage() {
                           {withdrawal.createdAt.toLocaleString()}
                         </p>
                         <p className="text-xs text-white/40">
-                          Points: {withdrawal.pointsDeducted?.toLocaleString() || 0} | IP: {withdrawal.ipAddress || "N/A"}
+                          Points deducted: {withdrawal.pointsDeducted?.toLocaleString() || 0}
                         </p>
                       </div>
                     </div>
 
-                    <div className="flex flex-wrap gap-2">
-                      <Button
-                        size="sm"
-                        onClick={() =>
-                          updateWithdrawalStatus(withdrawal.id, "completed", false)
-                        }
-                        disabled={processing === withdrawal.id}
-                        className="bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl"
-                      >
-                        {processing === withdrawal.id ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                        ) : (
-                          <>
-                            <CheckCircle className="mr-1 h-4 w-4" />
-                            Approve
-                          </>
-                        )}
-                      </Button>
-                      
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() =>
-                          updateWithdrawalStatus(
-                            withdrawal.id,
-                            "rejected",
-                            true,
-                            withdrawal.userId,
-                            withdrawal.pointsDeducted
-                          )
-                        }
-                        disabled={processing === withdrawal.id}
-                        className="text-orange-500 border-orange-500/30 hover:bg-orange-500/10 rounded-xl"
-                      >
-                        {processing === withdrawal.id ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                        ) : (
-                          <>
-                            <RotateCcw className="mr-1 h-4 w-4" />
-                            Reject & Refund
-                          </>
-                        )}
-                      </Button>
-                      
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() =>
-                          updateWithdrawalStatus(
-                            withdrawal.id,
-                            "rejected",
-                            false
-                          )
-                        }
-                        disabled={processing === withdrawal.id}
-                        className="text-red-500 border-red-500/30 hover:bg-red-500/10 rounded-xl"
-                      >
-                        {processing === withdrawal.id ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                        ) : (
-                          <>
-                            <Ban className="mr-1 h-4 w-4" />
-                            Reject
-                          </>
-                        )}
-                      </Button>
-                    </div>
+                    {withdrawal.status === "pending" && (
+                      <div className="flex flex-wrap gap-2">
+                        {/* Approve Button */}
+                        <Button
+                          size="sm"
+                          onClick={() =>
+                            updateWithdrawalStatus(withdrawal.id, "completed", false)
+                          }
+                          disabled={processing === withdrawal.id}
+                          className="bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl"
+                        >
+                          {processing === withdrawal.id ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <>
+                              <CheckCircle className="mr-1 h-4 w-4" />
+                              Approve
+                            </>
+                          )}
+                        </Button>
+                        
+                        {/* Reject & Refund Button */}
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() =>
+                            updateWithdrawalStatus(
+                              withdrawal.id,
+                              "rejected",
+                              true,
+                              withdrawal.userId,
+                              withdrawal.pointsDeducted
+                            )
+                          }
+                          disabled={processing === withdrawal.id}
+                          className="text-orange-500 border-orange-500/30 hover:bg-orange-500/10 rounded-xl"
+                        >
+                          {processing === withdrawal.id ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <>
+                              <RotateCcw className="mr-1 h-4 w-4" />
+                              Reject & Refund
+                            </>
+                          )}
+                        </Button>
+                        
+                        {/* Reject No Refund Button */}
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() =>
+                            updateWithdrawalStatus(
+                              withdrawal.id,
+                              "rejected",
+                              false
+                            )
+                          }
+                          disabled={processing === withdrawal.id}
+                          className="text-red-500 border-red-500/30 hover:bg-red-500/10 rounded-xl"
+                        >
+                          {processing === withdrawal.id ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <>
+                              <Ban className="mr-1 h-4 w-4" />
+                              Reject (No Refund)
+                            </>
+                          )}
+                        </Button>
+                      </div>
+                    )}
                   </div>
                 </div>
               ))}
